@@ -3,34 +3,45 @@ param(
     [string[]]$ScrcpyArgs
 )
 
+# Configuration
 $deviceIp = "192.168.178.39:5555"
 $scrcpyPath = "C:\progs\scrcpy\scrcpy.exe"
+Set-Variable -Name TIMEOUT_SECONDS -Value 5 -Option Constant
 
-function Start-Scrcpy {
+function Start-ScrcpyProcess {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $scrcpyPath
     $psi.Arguments = $ScrcpyArgs -join " "
     $psi.UseShellExecute = $false
 
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $proc.WaitForExit()
     
+    # Wait for exit or timeout (milliseconds)
+    $hasExited = $proc.WaitForExit($TIMEOUT_SECONDS * 1000)
+
+    if (-not $hasExited) {
+        # Process is still running after timeout -> successful connection running in background
+        Write-Host "scrcpy launched successfully and running in background."
+        return 0
+    }
+
+    # Process exited within timeout period -> evaluation of exit code
     $code = $proc.ExitCode
-    Write-Host "scrcpy exit code: $code"
+    Write-Host "scrcpy exited within threshold (exit code: $code)"
     return $code
 }
 
-$exitCode = Start-Scrcpy
+$exitCode = Start-ScrcpyProcess
 
 if ($exitCode -ne 0) {
-    Write-Host "Connection failed (exit code $exitCode). Retrying with adb connect..."
+    Write-Host "Connection failed. Retrying with adb connect..."
     adb connect $deviceIp
-    $exitCode = Start-Scrcpy
+    $exitCode = Start-ScrcpyProcess
     
     if ($exitCode -ne 0) {
-        Write-Host "Still failing (exit code $exitCode). Restarting adb server..."
+        Write-Host "Still failing. Restarting adb server..."
         adb kill-server
         adb connect $deviceIp
-        Start-Scrcpy
+        [void](Start-ScrcpyProcess)
     }
 }
