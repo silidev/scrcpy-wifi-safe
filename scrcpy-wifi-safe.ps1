@@ -3,6 +3,8 @@ param(
     [string[]]$ScrcpyArgs
 )
 
+# This starts scrcpy but if that fails it kill the adb server and adb connects again and then starts scrcpy.
+
 # Configuration
 $deviceIp = "192.168.178.39:5555"
 $scrcpyPath = "C:\progs\scrcpy\scrcpy.exe"
