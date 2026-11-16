@@ -24,8 +24,4 @@ $env:SCRCPY_DEVICE_IP = "192.168.178.39"
 powershell -ExecutionPolicy Bypass -File .\scrcpy-wifi-safe.ps1
 ```
 
-Or via `s.cmd`:
-
-```cmd
-s.cmd
-```
+Example in scrcpy-koh.cmd
