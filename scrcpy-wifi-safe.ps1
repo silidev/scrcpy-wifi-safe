@@ -4,10 +4,12 @@ param(
 )
 
 # This starts scrcpy but if that fails it kill the adb server and adb connects again and then starts scrcpy.
-
+# Published here: https://github.com/Genymobile/scrcpy/wiki/Fail-safe-connection-over-Wifi
 # Configuration
 $deviceIp = "192.168.178.39:5555"
 $scrcpyPath = "C:\progs\scrcpy\scrcpy.exe"
+# #### Timeout ####
+# 5 works good
 Set-Variable -Name TIMEOUT_SECONDS -Value 5 -Option Constant
 
 function Start-ScrcpyProcess {
