@@ -1,0 +1,14 @@
+# Scratch & debug scripts
+debug*.ps1
+*.log
+scratch/
+
+# Local environment overrides
+.env
+*.local.ps1
+
+# Editor & OS artifacts
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

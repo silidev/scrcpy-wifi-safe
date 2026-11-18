@@ -16,6 +16,7 @@ In AGENTS.md capture non-obvious knowledge that an AI agent cannot deduce on its
 - **Preserve CLI & Output Contract**: Do not alter CLI parameters (`$ScrcpyArgs`, `%*`), window flags, or console behavior unless explicitly ordered.
 - **Diagnostics First**: If an error cannot be resolved with certainty, improve logging/diagnostics to expose what failed rather than guessing changes.
 - **Missing References**: Never remove or rewrite code referencing missing external tools/entities; report them first.
+- **Commit Message**: If any file was changed, when reporting to the user, include a commit message for the user to use for committing the changes.
 
 ---
 
@@ -82,3 +83,19 @@ All timeouts in `scrcpy-wifi-safe.ps1` are calibrated directly against the measu
 | mDNS timeout (Attempts 2–3) | **3.5 s** | Allows cold-started daemon to receive the multicast packet. |
 | Stale endpoint cleanup | Implicit via server restart | Killing the daemon clears all device sockets; explicit `adb disconnect` is redundant. |
 | Delay between retries | **150 ms** | Eliminates dead waiting time before next attempt. |
+
+---
+
+## 6. Verification & Syntax Validation (Zero Side-Effects)
+
+To validate PowerShell 7 script syntax and AST parsing without needing a physical phone connected or initiating network calls:
+
+```powershell
+pwsh -NoProfile -Command '$errs = @(); [void][System.Management.Automation.Language.Parser]::ParseFile("scrcpy-wifi-safe.ps1", [ref]$null, [ref]$errs); if ($errs.Count -gt 0) { $errs; exit 1 } else { "Syntax OK" }'
+```
+
+To run a safe dry-run through scrcpy's parameter validation without launching a full screen mirror:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scrcpy-wifi-safe.ps1 -v
+```
