@@ -5,7 +5,7 @@ param(
 
 # This starts scrcpy over Wi-Fi. If connection fails or freezes, it safely cleans up,
 # discovers updated dynamic ports via mDNS, restarts ADB if needed, and retries.
-# Exclusively designed for PowerShell 7 (pwsh).
+# Exclusively designed for PowerShell 7 (pwsh) with minimal latency timeouts.
 
 # Configuration
 $deviceHost = if ($env:SCRCPY_DEVICE_IP) { $env:SCRCPY_DEVICE_IP } else { "192.168.178.39" }
@@ -13,7 +13,7 @@ $defaultPort = "5555"
 $scrcpyPath = if ($env:SCRCPY_PATH) { $env:SCRCPY_PATH } elseif (Test-Path "C:\progs\scrcpy\scrcpy.exe") { "C:\progs\scrcpy\scrcpy.exe" } else { "scrcpy" }
 
 # Timeout in seconds to consider scrcpy successfully running in background
-Set-Variable -Name TIMEOUT_SECONDS -Value 5 -Option Constant
+$timeoutSeconds = 2
 $maxAttempts = 3
 
 function Show-WirelessDebuggingHelp {
@@ -25,20 +25,22 @@ function Show-WirelessDebuggingHelp {
     Write-Host ""
 }
 
-# Safely invoke an ADB command with a timeout so it never hangs indefinitely
+# Safely invoke an ADB command with a tight timeout so it never hangs indefinitely
 function Invoke-Adb {
     param(
         [string[]]$Arguments,
-        [int]$TimeoutSeconds = 5
+        [double]$TimeoutSeconds = 2
     )
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = "adb"
-    $psi.Arguments = $Arguments -join " "
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
+    foreach ($arg in $Arguments) {
+        $psi.ArgumentList.Add($arg)
+    }
 
     try {
         $proc = [System.Diagnostics.Process]::Start($psi)
@@ -47,12 +49,12 @@ function Invoke-Adb {
         $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
         $stderrTask = $proc.StandardError.ReadToEndAsync()
 
-        $hasExited = $proc.WaitForExit($TimeoutSeconds * 1000)
+        $hasExited = $proc.WaitForExit([int]($TimeoutSeconds * 1000))
         if (-not $hasExited) {
             try { $proc.Kill() } catch { }
         }
 
-        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 1000) | Out-Null
+        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
         $out = $stdoutTask.Result
         if (-not [string]::IsNullOrWhiteSpace($out)) {
             return ($out -split "`r?`n")
@@ -63,56 +65,57 @@ function Invoke-Adb {
     }
 }
 
-# Safely restarts ADB server with guaranteed timeout and force-kill fallback
+# Safely restarts ADB server with minimal delay and force-kill fallback
 function Restart-AdbServer {
     Write-Host "Restarting ADB server..." -ForegroundColor Cyan
 
-    # Try graceful kill-server with 2-second timeout
+    # Try quick graceful kill-server (800ms)
     try {
         $p = Start-Process -FilePath "adb" -ArgumentList "kill-server" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
         if ($p) {
-            if (-not $p.WaitForExit(2000)) {
+            if (-not $p.WaitForExit(800)) {
                 try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
             }
         }
     } catch { }
 
-    # Force kill any lingering adb processes to guarantee port 5037 is freed
+    # Force kill any lingering adb processes immediately to guarantee port 5037 is freed
     Stop-Process -Name "adb" -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 100
 
-    # Start adb server cleanly with 4-second timeout
+    # Start adb server cleanly (5s timeout protects cold starts under load without adding delay)
     try {
         $p = Start-Process -FilePath "adb" -ArgumentList "start-server" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
         if ($p) {
-            if (-not $p.WaitForExit(4000)) {
+            if (-not $p.WaitForExit(5000)) {
                 try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
             }
         }
     } catch { }
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 200
 }
 
-# Check if a specific endpoint is reachable and authorized
+# Check if a specific endpoint is reachable and authorized (1s max)
 function Test-DeviceConnection {
     param([string]$Endpoint)
     if (-not $Endpoint) { return $false }
-    $stateLines = Invoke-Adb -Arguments @("-s", $Endpoint, "get-state") -TimeoutSeconds 3
+    $stateLines = Invoke-Adb -Arguments @("-s", $Endpoint, "get-state") -TimeoutSeconds 1
     $state = ($stateLines -join " ").Trim()
     return ($state -eq "device")
 }
 
 # Discover the endpoint (IP:Port) for $deviceHost
 function Find-DeviceEndpoint {
-    param([int]$MdnsTimeoutSeconds = 6)
+    param([double]$MdnsTimeoutSeconds = 2)
 
     # 1. Check if already connected on any port for $deviceHost and alive
-    $devicesOut = Invoke-Adb -Arguments @("devices") -TimeoutSeconds 3
-    $connected = $devicesOut | Where-Object { $_ -match "$([regex]::Escape($deviceHost)):(\d+)\s+device" }
-    if ($connected -match "($([regex]::Escape($deviceHost)):\d+)") {
-        $candidate = $matches[1]
-        if (Test-DeviceConnection -Endpoint $candidate) {
-            return $candidate
+    $devicesOut = Invoke-Adb -Arguments @("devices") -TimeoutSeconds 1
+    foreach ($line in $devicesOut) {
+        if ($line -match "$([regex]::Escape($deviceHost)):(\d+)\s+device") {
+            $candidate = "$deviceHost`:$($matches[1])"
+            if (Test-DeviceConnection -Endpoint $candidate) {
+                return $candidate
+            }
         }
     }
 
@@ -120,7 +123,7 @@ function Find-DeviceEndpoint {
     Write-Host "Searching for $deviceHost via mDNS..."
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     while ($stopwatch.Elapsed.TotalSeconds -lt $MdnsTimeoutSeconds) {
-        $mdns = Invoke-Adb -Arguments @("mdns", "services") -TimeoutSeconds 4
+        $mdns = Invoke-Adb -Arguments @("mdns", "services") -TimeoutSeconds 1.5
         $matchesList = @($mdns | Select-String -Pattern "$([regex]::Escape($deviceHost)):(\d+)")
         if ($matchesList.Count -gt 0) {
             # Pick the most recent match
@@ -128,28 +131,29 @@ function Find-DeviceEndpoint {
             Write-Host "Discovered device port via mDNS: $found" -ForegroundColor Green
             return $found
         }
-        Start-Sleep -Milliseconds 700
+        Start-Sleep -Milliseconds 250
     }
 
     # 3. Fallback to default port
     return "$deviceHost`:$defaultPort"
 }
 
-# Connects to an endpoint via adb connect with a timeout and visible output
+# Connects to an endpoint via adb connect with a tight timeout and visible output
 function Connect-AdbEndpoint {
     param(
         [string]$Endpoint,
-        [int]$TimeoutSeconds = 6
+        [double]$TimeoutSeconds = 3
     )
 
     Write-Host "Connecting to $Endpoint via adb..."
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = "adb"
-    $psi.Arguments = "connect $Endpoint"
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
+    $psi.ArgumentList.Add("connect")
+    $psi.ArgumentList.Add($Endpoint)
 
     try {
         $proc = [System.Diagnostics.Process]::Start($psi)
@@ -158,14 +162,14 @@ function Connect-AdbEndpoint {
         $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
         $stderrTask = $proc.StandardError.ReadToEndAsync()
 
-        $hasExited = $proc.WaitForExit($TimeoutSeconds * 1000)
+        $hasExited = $proc.WaitForExit([int]($TimeoutSeconds * 1000))
         if (-not $hasExited) {
             try { $proc.Kill() } catch { }
             Write-Host "adb connect timed out after $TimeoutSeconds seconds." -ForegroundColor Yellow
             return $false
         }
 
-        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 1000) | Out-Null
+        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
         $stdout = $stdoutTask.Result
         $stderr = $stderrTask.Result
 
@@ -199,13 +203,15 @@ function Start-ScrcpyProcess {
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $scrcpyPath
-    $psi.Arguments = $argsList -join " "
     $psi.UseShellExecute = $false
+    foreach ($arg in $argsList) {
+        $psi.ArgumentList.Add($arg)
+    }
 
     $proc = [System.Diagnostics.Process]::Start($psi)
 
     # Wait for exit or timeout (milliseconds)
-    $hasExited = $proc.WaitForExit($TIMEOUT_SECONDS * 1000)
+    $hasExited = $proc.WaitForExit($timeoutSeconds * 1000)
 
     if (-not $hasExited) {
         if (-not $proc.HasExited) {
@@ -227,14 +233,14 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         Write-Host "`n--- Retry attempt $attempt of $maxAttempts ---" -ForegroundColor Cyan
     }
 
-    # Find endpoint (give mDNS a bit more time on retries since ADB was restarted)
-    $mdnsWait = if ($attempt -eq 1) { 5 } else { 8 }
+    # Find endpoint (give mDNS 1.5s on first try, 3.5s on retries after server restart)
+    $mdnsWait = if ($attempt -eq 1) { 1.5 } else { 3.5 }
     $deviceIp = Find-DeviceEndpoint -MdnsTimeoutSeconds $mdnsWait
 
     # Verify connection status
     $isConnected = Test-DeviceConnection -Endpoint $deviceIp
     if (-not $isConnected) {
-        $connectOk = Connect-AdbEndpoint -Endpoint $deviceIp -TimeoutSeconds 6
+        $connectOk = Connect-AdbEndpoint -Endpoint $deviceIp -TimeoutSeconds 3
         $isConnected = $connectOk -or (Test-DeviceConnection -Endpoint $deviceIp)
     } else {
         Write-Host "Device $deviceIp already connected." -ForegroundColor Green
@@ -252,10 +258,10 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         Write-Host "Connection attempt $attempt failed. Retrying..." -ForegroundColor Yellow
         if ($deviceIp) {
             # Disconnect stale endpoint so it doesn't linger in ADB device cache
-            Invoke-Adb -Arguments @("disconnect", $deviceIp) -TimeoutSeconds 2 | Out-Null
+            Invoke-Adb -Arguments @("disconnect", $deviceIp) -TimeoutSeconds 1 | Out-Null
         }
         Restart-AdbServer
-        Start-Sleep -Milliseconds 800
+        Start-Sleep -Milliseconds 200
     }
 }
 
