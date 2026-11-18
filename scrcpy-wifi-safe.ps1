@@ -54,7 +54,10 @@ function Invoke-Adb {
             try { $proc.Kill() } catch { }
         }
 
-        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
+        if (-not $stdoutTask.IsCompleted -or -not $stderrTask.IsCompleted) {
+            [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
+        }
+
         $out = $stdoutTask.Result
         if (-not [string]::IsNullOrWhiteSpace($out)) {
             return ($out -split "`r?`n")
@@ -65,21 +68,11 @@ function Invoke-Adb {
     }
 }
 
-# Safely restarts ADB server with minimal delay and force-kill fallback
+# Safely restarts ADB server with immediate force-kill (avoids socket hangs and deadlocks)
 function Restart-AdbServer {
     Write-Host "Restarting ADB server..." -ForegroundColor Cyan
 
-    # Try quick graceful kill-server (800ms)
-    try {
-        $p = Start-Process -FilePath "adb" -ArgumentList "kill-server" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
-        if ($p) {
-            if (-not $p.WaitForExit(800)) {
-                try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
-            }
-        }
-    } catch { }
-
-    # Force kill any lingering adb processes immediately to guarantee port 5037 is freed
+    # Immediate force-kill: eliminates hanging kill-server calls and frees tcp:5037
     Stop-Process -Name "adb" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 100
 
@@ -92,7 +85,7 @@ function Restart-AdbServer {
             }
         }
     } catch { }
-    Start-Sleep -Milliseconds 200
+    Start-Sleep -Milliseconds 100
 }
 
 # Check if a specific endpoint is reachable and authorized (1s max)
@@ -108,14 +101,11 @@ function Test-DeviceConnection {
 function Find-DeviceEndpoint {
     param([double]$MdnsTimeoutSeconds = 2)
 
-    # 1. Check if already connected on any port for $deviceHost and alive
+    # 1. Check if already connected on any port for $deviceHost
     $devicesOut = Invoke-Adb -Arguments @("devices") -TimeoutSeconds 1
     foreach ($line in $devicesOut) {
         if ($line -match "$([regex]::Escape($deviceHost)):(\d+)\s+device") {
-            $candidate = "$deviceHost`:$($matches[1])"
-            if (Test-DeviceConnection -Endpoint $candidate) {
-                return $candidate
-            }
+            return "$deviceHost`:$($matches[1])"
         }
     }
 
@@ -124,12 +114,13 @@ function Find-DeviceEndpoint {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     while ($stopwatch.Elapsed.TotalSeconds -lt $MdnsTimeoutSeconds) {
         $mdns = Invoke-Adb -Arguments @("mdns", "services") -TimeoutSeconds 1.5
-        $matchesList = @($mdns | Select-String -Pattern "$([regex]::Escape($deviceHost)):(\d+)")
-        if ($matchesList.Count -gt 0) {
-            # Pick the most recent match
-            $found = $matchesList[-1].Matches[0].Value
-            Write-Host "Discovered device port via mDNS: $found" -ForegroundColor Green
-            return $found
+        # Scan backwards to pick the latest published port immediately without pipeline overhead
+        for ($i = $mdns.Length - 1; $i -ge 0; $i--) {
+            if ($mdns[$i] -match "$([regex]::Escape($deviceHost)):(\d+)") {
+                $found = "$deviceHost`:$($matches[1])"
+                Write-Host "Discovered device port via mDNS: $found" -ForegroundColor Green
+                return $found
+            }
         }
         Start-Sleep -Milliseconds 250
     }
@@ -169,7 +160,9 @@ function Connect-AdbEndpoint {
             return $false
         }
 
-        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
+        if (-not $stdoutTask.IsCompleted -or -not $stderrTask.IsCompleted) {
+            [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
+        }
         $stdout = $stdoutTask.Result
         $stderr = $stderrTask.Result
 
@@ -253,15 +246,11 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         }
     }
 
-    # If connection or scrcpy failed, clean up before retrying
+    # If connection or scrcpy failed, clean up and restart ADB server before retrying
     if ($attempt -lt $maxAttempts) {
         Write-Host "Connection attempt $attempt failed. Retrying..." -ForegroundColor Yellow
-        if ($deviceIp) {
-            # Disconnect stale endpoint so it doesn't linger in ADB device cache
-            Invoke-Adb -Arguments @("disconnect", $deviceIp) -TimeoutSeconds 1 | Out-Null
-        }
         Restart-AdbServer
-        Start-Sleep -Milliseconds 200
+        Start-Sleep -Milliseconds 150
     }
 }
 

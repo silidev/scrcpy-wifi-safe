@@ -1,7 +1,7 @@
 # Agent Guide: scrcpy-wifi-safe
 
 ## Purpose
-In AGENTS.md capture non-obvious knowledge, that an AI agent cannot deduce on its own, e. g. domain knowledge, platform quirks, and knowledge discovered during troubleshooting . The goal is to minimize token cost and prevent regressions or trial-and-error debugging in future sessions if the chat history is unavailable.
+In AGENTS.md capture non-obvious knowledge that an AI agent cannot deduce on its own, e. g. domain knowledge, platform quirks, and knowledge discovered during troubleshooting. The goal is to minimize token cost and prevent regressions or trial-and-error debugging in future sessions if the chat history is unavailable.
 
 ---
 
@@ -35,7 +35,7 @@ In AGENTS.md capture non-obvious knowledge, that an AI agent cannot deduce on it
 
 1. **`adb kill-server` indefinite hang**:
    - On Windows, `adb kill-server` hangs indefinitely if the daemon is stuck waiting on a dead or half-closed TCP socket.
-   - **Fix**: Attempt graceful `kill-server` with a short timeout (800 ms), then unconditionally force-terminate via `Stop-Process -Name adb -Force -ErrorAction SilentlyContinue`.
+   - **Fix**: Skip `kill-server` entirely and directly force-terminate via `Stop-Process -Name adb -Force -ErrorAction SilentlyContinue`. This immediately frees port 5037 and clears all socket state with zero latency.
 2. **mDNS discovery delay after daemon restart**:
    - Killing the ADB server clears its local mDNS cache.
    - When the daemon restarts, discovering the phone's dynamic port via multicast DNS takes 200–500 ms (measured). A single query immediately after startup returns empty; polling with a small backoff is required.
@@ -72,12 +72,13 @@ All timeouts in `scrcpy-wifi-safe.ps1` are calibrated directly against the measu
 | `Invoke-Adb` default timeout | **2.0 s** | Local queries complete in < 150 ms; 2 s provides safety margin without blocking. |
 | `Test-DeviceConnection` | **1.0 s** | `get-state` takes ~130 ms; 1 s is plenty. |
 | `Connect-AdbEndpoint` timeout | **3.0 s** | TCP RST takes 2.58 s to return error 10061. 3.0 s lets it report naturally, but cuts off silent packet drops before the 20+ s OS timeout. |
-| `Restart-AdbServer` kill wait | **800 ms** | If daemon does not die in 800 ms, it is wedged; force-kill fires immediately. |
+| `Restart-AdbServer` kill method | `Stop-Process -Force` | Skips `kill-server`; instant force-kill guarantees no hang and frees port 5037 immediately. |
 | `Restart-AdbServer` post-kill sleep | **100 ms** | Sufficient for Windows kernel socket cleanup. |
-| `Restart-AdbServer` start wait | **3000 ms** | Covers cold daemon startup (~2.4 s). |
-| `Restart-AdbServer` post-start sleep| **200 ms** | Buffer before issuing subsequent socket commands. |
+| `Restart-AdbServer` start wait | **5000 ms** | Safety margin for cold daemon startup under CPU load (returns immediately when started). |
+| `Restart-AdbServer` post-start sleep| **100 ms** | Buffer before issuing subsequent socket commands. |
 | mDNS poll interval | **250 ms** | Captures the broadcast (~210 ms) on the 1st or 2nd cycle without CPU spin. |
+| mDNS reverse scan | Reverse `-match` | Scans array backwards; captures newest port on 1st match with zero pipeline overhead. |
 | mDNS timeout (Attempt 1) | **1.5 s** | If daemon is already running, match is instant (< 200 ms). |
 | mDNS timeout (Attempts 2–3) | **3.5 s** | Allows cold-started daemon to receive the multicast packet. |
-| Stale endpoint cleanup | `adb disconnect` (1 s) | Removes dead ports from `adb devices` cache before retry. |
-| Delay between retries | **200 ms** | Eliminates dead waiting time before next attempt. |
+| Stale endpoint cleanup | Implicit via server restart | Killing the daemon clears all device sockets; explicit `adb disconnect` is redundant. |
+| Delay between retries | **150 ms** | Eliminates dead waiting time before next attempt. |
