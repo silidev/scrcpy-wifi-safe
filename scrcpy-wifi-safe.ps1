@@ -8,13 +8,57 @@ param(
 # Exclusively designed for PowerShell 7 (pwsh) with minimal latency timeouts.
 
 # Configuration
-$deviceHost = if ($env:SCRCPY_DEVICE_IP) { $env:SCRCPY_DEVICE_IP } else { "192.168.178.39" }
+$deviceHost = if ($env:SCRCPY_DEVICE_IP) { $env:SCRCPY_DEVICE_IP } else { "192.168.178.200" }
 $defaultPort = "5555"
 $scrcpyPath = if ($env:SCRCPY_PATH) { $env:SCRCPY_PATH } elseif (Test-Path "C:\progs\scrcpy\scrcpy.exe") { "C:\progs\scrcpy\scrcpy.exe" } else { "scrcpy" }
 
 # Timeout in seconds to consider scrcpy successfully running in background
 $timeoutSeconds = 2
 $maxAttempts = 3
+$maxPingLatencyMs = if ($env:SCRCPY_MAX_PING_MS) { [int]$env:SCRCPY_MAX_PING_MS } else { 200 }
+$pingBufferSize = 1400
+
+# Ping pre-check: verify network quality before proceeding
+Write-Host "Prüfe Verbindung zu $deviceHost (Ping -l $pingBufferSize)..."
+$pingSuccess = $false
+$pingLatency = $null
+$pingError = $null
+
+try {
+    $pingSender = [System.Net.NetworkInformation.Ping]::new()
+    $pingBuffer = [byte[]]::new($pingBufferSize)
+    $pingReply = $pingSender.Send($deviceHost, 2000, $pingBuffer)
+    if ($pingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+        $pingSuccess = $true
+        $pingLatency = $pingReply.RoundtripTime
+    } else {
+        $pingError = "Status: $($pingReply.Status)"
+    }
+} catch {
+    try {
+        $pingOut = ping.exe $deviceHost -l $pingBufferSize -n 1
+        if ($LASTEXITCODE -eq 0 -and ($pingOut -join "`n") -match '(?:time|Zeit)[<=](?<ms>\d+)\s*ms') {
+            $pingSuccess = $true
+            $pingLatency = [int]$Matches['ms']
+        } else {
+            $pingError = "ping.exe fehlgeschlagen (Exit-Code: $LASTEXITCODE)"
+        }
+    } catch {
+        $pingError = $_.Exception.Message
+    }
+}
+
+if (-not $pingSuccess) {
+    Write-Host "ABBRUCH: Ping zu $deviceHost (-l $pingBufferSize) ist fehlgeschlagen ($pingError)." -ForegroundColor Red
+    exit 1
+}
+
+if ($pingLatency -gt $maxPingLatencyMs) {
+    Write-Host "ABBRUCH: Ping-Latenz zu $deviceHost ist zu hoch: $pingLatency ms (maximal erlaubt: $maxPingLatencyMs ms bei -l $pingBufferSize)." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "Ping OK: $pingLatency ms (<= $maxPingLatencyMs ms)." -ForegroundColor Green
 
 function Show-WirelessDebuggingHelp {
     Write-Host ""
