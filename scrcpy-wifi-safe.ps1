@@ -13,7 +13,7 @@ $defaultPort = "5555"
 $scrcpyPath = if ($env:SCRCPY_PATH) { $env:SCRCPY_PATH } elseif (Test-Path "C:\progs\scrcpy\scrcpy.exe") { "C:\progs\scrcpy\scrcpy.exe" } else { "scrcpy" }
 
 # Timeouts & limits
-$timeoutSeconds = if ($env:SCRCPY_TIMEOUT_SECONDS) { [int]$env:SCRCPY_TIMEOUT_SECONDS } else { 2 }
+$timeoutMs = if ($env:SCRCPY_TIMEOUT_MS) { [int]$env:SCRCPY_TIMEOUT_MS } else { 2000 }
 $maxAttempts = 3
 $maxPingLatencyMs = if ($env:SCRCPY_MAX_PING_MS) { [int]$env:SCRCPY_MAX_PING_MS } else { 200 }
 $pingBufferSize = 1400
@@ -21,9 +21,9 @@ $pingTimeoutMs = if ($env:SCRCPY_PING_TIMEOUT_MS) { [int]$env:SCRCPY_PING_TIMEOU
 
 # Timeouts for measured commands
 $adbStartServerTimeoutMs = if ($env:SCRCPY_ADB_START_TIMEOUT_MS) { [int]$env:SCRCPY_ADB_START_TIMEOUT_MS } else { 5000 }
-$mdnsTimeoutFirstAttemptSeconds = if ($env:SCRCPY_MDNS_TIMEOUT_FIRST_S) { [double]$env:SCRCPY_MDNS_TIMEOUT_FIRST_S } else { 1.5 }
-$mdnsTimeoutRetrySeconds = if ($env:SCRCPY_MDNS_TIMEOUT_RETRY_S) { [double]$env:SCRCPY_MDNS_TIMEOUT_RETRY_S } else { 3.5 }
-$adbConnectTimeoutSeconds = if ($env:SCRCPY_ADB_CONNECT_TIMEOUT_S) { [double]$env:SCRCPY_ADB_CONNECT_TIMEOUT_S } else { 1 }
+$mdnsTimeoutFirstAttemptMs = if ($env:SCRCPY_MDNS_TIMEOUT_FIRST_MS) { [double]$env:SCRCPY_MDNS_TIMEOUT_FIRST_MS } else { 1500 }
+$mdnsTimeoutRetryMs = if ($env:SCRCPY_MDNS_TIMEOUT_RETRY_MS) { [double]$env:SCRCPY_MDNS_TIMEOUT_RETRY_MS } else { 3500 }
+$adbConnectTimeoutMs = if ($env:SCRCPY_ADB_CONNECT_TIMEOUT_MS) { [double]$env:SCRCPY_ADB_CONNECT_TIMEOUT_MS } else { 1000 }
 $durationRedThresholdMs = if ($env:SCRCPY_DURATION_RED_MS) { [int]$env:SCRCPY_DURATION_RED_MS } else { 200 }
 
 # Ping pre-check: verify network quality before proceeding
@@ -95,7 +95,7 @@ function Write-CommandDuration {
 function Invoke-Adb {
     param(
         [string[]]$Arguments,
-        [double]$TimeoutSeconds = 2
+        [double]$TimeoutMs = 2000
     )
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -115,7 +115,7 @@ function Invoke-Adb {
         $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
         $stderrTask = $proc.StandardError.ReadToEndAsync()
 
-        $hasExited = $proc.WaitForExit([int]($TimeoutSeconds * 1000))
+        $hasExited = $proc.WaitForExit([int]$TimeoutMs)
         if (-not $hasExited) {
             try { $proc.Kill() } catch { }
         }
@@ -157,21 +157,21 @@ function Restart-AdbServer {
     Start-Sleep -Milliseconds 100
 }
 
-# Check if a specific endpoint is reachable and authorized (1s max)
+# Check if a specific endpoint is reachable and authorized (1000 ms max)
 function Test-DeviceConnection {
     param([string]$Endpoint)
     if (-not $Endpoint) { return $false }
-    $stateLines = Invoke-Adb -Arguments @("-s", $Endpoint, "get-state") -TimeoutSeconds 1
+    $stateLines = Invoke-Adb -Arguments @("-s", $Endpoint, "get-state") -TimeoutMs 1000
     $state = ($stateLines -join " ").Trim()
     return ($state -eq "device")
 }
 
 # Discover the endpoint (IP:Port) for $deviceHost
 function Find-DeviceEndpoint {
-    param([double]$MdnsTimeoutSeconds = $mdnsTimeoutFirstAttemptSeconds)
+    param([double]$MdnsTimeoutMs = $mdnsTimeoutFirstAttemptMs)
 
     # 1. Check if already connected on any port for $deviceHost
-    $devicesOut = Invoke-Adb -Arguments @("devices") -TimeoutSeconds 1
+    $devicesOut = Invoke-Adb -Arguments @("devices") -TimeoutMs 1000
     foreach ($line in $devicesOut) {
         if ($line -match "$([regex]::Escape($deviceHost)):(\d+)\s+device") {
             return "$deviceHost`:$($matches[1])"
@@ -181,8 +181,8 @@ function Find-DeviceEndpoint {
     # 2. Check mDNS discovery (Android 11+ Wireless Debugging uses dynamic ports)
     Write-Host "Searching for $deviceHost via mDNS..."
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    while ($stopwatch.Elapsed.TotalSeconds -lt $MdnsTimeoutSeconds) {
-        $mdns = Invoke-Adb -Arguments @("mdns", "services") -TimeoutSeconds 1.5
+    while ($stopwatch.Elapsed.TotalMilliseconds -lt $MdnsTimeoutMs) {
+        $mdns = Invoke-Adb -Arguments @("mdns", "services") -TimeoutMs 1500
         # Scan backwards to pick the latest published port immediately without pipeline overhead
         for ($i = $mdns.Length - 1; $i -ge 0; $i--) {
             if ($mdns[$i] -match "$([regex]::Escape($deviceHost)):(\d+)") {
@@ -206,7 +206,7 @@ function Find-DeviceEndpoint {
 function Connect-AdbEndpoint {
     param(
         [string]$Endpoint,
-        [double]$TimeoutSeconds = $adbConnectTimeoutSeconds
+        [double]$TimeoutMs = $adbConnectTimeoutMs
     )
 
     Write-Host "Connecting to $Endpoint via adb..."
@@ -231,11 +231,11 @@ function Connect-AdbEndpoint {
         $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
         $stderrTask = $proc.StandardError.ReadToEndAsync()
 
-        $hasExited = $proc.WaitForExit([int]($TimeoutSeconds * 1000))
+        $hasExited = $proc.WaitForExit([int]$TimeoutMs)
         if (-not $hasExited) {
             try { $proc.Kill() } catch { }
             $sw.Stop()
-            Write-Host "adb connect timed out after $TimeoutSeconds seconds." -ForegroundColor Yellow
+            Write-Host "adb connect timed out after $TimeoutMs ms." -ForegroundColor Yellow
             Write-CommandDuration -CommandName "adb connect" -DurationMs $sw.ElapsedMilliseconds
             return $false
         }
@@ -289,7 +289,7 @@ function Start-ScrcpyProcess {
     $proc = [System.Diagnostics.Process]::Start($psi)
 
     # Wait for exit or timeout (milliseconds)
-    $hasExited = $proc.WaitForExit($timeoutSeconds * 1000)
+    $hasExited = $proc.WaitForExit($timeoutMs)
     $sw.Stop()
     Write-CommandDuration -CommandName "scrcpy" -DurationMs $sw.ElapsedMilliseconds
 
@@ -314,13 +314,13 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
     }
 
     # Find endpoint (give mDNS first attempt timeout on first try, retry timeout after server restart)
-    $mdnsWait = if ($attempt -eq 1) { $mdnsTimeoutFirstAttemptSeconds } else { $mdnsTimeoutRetrySeconds }
-    $deviceIp = Find-DeviceEndpoint -MdnsTimeoutSeconds $mdnsWait
+    $mdnsWait = if ($attempt -eq 1) { $mdnsTimeoutFirstAttemptMs } else { $mdnsTimeoutRetryMs }
+    $deviceIp = Find-DeviceEndpoint -MdnsTimeoutMs $mdnsWait
 
     # Verify connection status
     $isConnected = Test-DeviceConnection -Endpoint $deviceIp
     if (-not $isConnected) {
-        $connectOk = Connect-AdbEndpoint -Endpoint $deviceIp -TimeoutSeconds $adbConnectTimeoutSeconds
+        $connectOk = Connect-AdbEndpoint -Endpoint $deviceIp -TimeoutMs $adbConnectTimeoutMs
         $isConnected = $connectOk -or (Test-DeviceConnection -Endpoint $deviceIp)
     } else {
         Write-Host "Device $deviceIp already connected." -ForegroundColor Green

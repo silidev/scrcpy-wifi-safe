@@ -70,20 +70,20 @@ They are defined as **top-level variables** at the start of the script and can b
 
 | Variable | Env-var override | Default | Rationale |
 | :--- | :--- | :--- | :--- |
-| `$timeoutSeconds` | `SCRCPY_TIMEOUT_SECONDS` | **2 s** | Failed launches exit in < 400 ms. If running past 2 s, scrcpy is stable in background. |
+| `$timeoutMs` | `SCRCPY_TIMEOUT_MS` | **2000 ms** | Failed launches exit in < 400 ms. If running past 2000 ms, scrcpy is stable in background. |
 | `$pingTimeoutMs` | `SCRCPY_PING_TIMEOUT_MS` | **2000 ms** | Generous ceiling for the .NET Ping API call. |
 | `$adbStartServerTimeoutMs` | `SCRCPY_ADB_START_TIMEOUT_MS` | **5000 ms** | Safety margin for cold daemon startup under CPU load (returns immediately when started). |
-| `$mdnsTimeoutFirstAttemptSeconds` | `SCRCPY_MDNS_TIMEOUT_FIRST_S` | **1.5 s** | If daemon is already running, match is instant (< 200 ms). |
-| `$mdnsTimeoutRetrySeconds` | `SCRCPY_MDNS_TIMEOUT_RETRY_S` | **3.5 s** | Allows cold-started daemon to receive the multicast packet after server restart. |
-| `$adbConnectTimeoutSeconds` | `SCRCPY_ADB_CONNECT_TIMEOUT_S` | **3.0 s** | TCP RST takes 2.58 s to return error 10061. 3.0 s lets it report naturally, but cuts off silent packet drops before the 20+ s OS timeout. |
+| `$mdnsTimeoutFirstAttemptMs` | `SCRCPY_MDNS_TIMEOUT_FIRST_MS` | **1500 ms** | If daemon is already running, match is instant (< 200 ms). |
+| `$mdnsTimeoutRetryMs` | `SCRCPY_MDNS_TIMEOUT_RETRY_MS` | **3500 ms** | Allows cold-started daemon to receive the multicast packet after server restart. |
+| `$adbConnectTimeoutMs` | `SCRCPY_ADB_CONNECT_TIMEOUT_MS` | **3000 ms** | TCP RST takes 2580 ms to return error 10061. 3000 ms lets it report naturally, but cuts off silent packet drops before the 20+ s OS timeout. |
 | `$durationRedThresholdMs` | `SCRCPY_DURATION_RED_MS` | **200 ms** | Duration display threshold: values above this are printed in red. |
 
 Additional fixed timings (not configurable via env — they are low-level OS/socket constants):
 
 | Setting / Location | Value | Rationale |
 | :--- | :--- | :--- |
-| `Invoke-Adb` default timeout | **2.0 s** | Local queries complete in < 150 ms; 2 s provides safety margin without blocking. |
-| `Test-DeviceConnection` timeout | **1.0 s** | `get-state` takes ~130 ms; 1 s is plenty. |
+| `Invoke-Adb` default timeout | **2000 ms** | Local queries complete in < 150 ms; 2000 ms provides safety margin without blocking. |
+| `Test-DeviceConnection` timeout | **1000 ms** | `get-state` takes ~130 ms; 1000 ms is plenty. |
 | `Restart-AdbServer` kill method | `Stop-Process -Force` | Skips `kill-server`; instant force-kill guarantees no hang and frees port 5037 immediately. |
 | `Restart-AdbServer` post-kill sleep | **100 ms** | Sufficient for Windows kernel socket cleanup. |
 | `Restart-AdbServer` post-start sleep | **100 ms** | Buffer before issuing subsequent socket commands. |
