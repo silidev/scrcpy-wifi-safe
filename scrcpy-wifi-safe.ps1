@@ -121,6 +121,7 @@ function Restart-AdbServer {
     Start-Sleep -Milliseconds 100
 
     # Start adb server cleanly (5s timeout protects cold starts under load without adding delay)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $p = Start-Process -FilePath "adb" -ArgumentList "start-server" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
         if ($p) {
@@ -129,6 +130,8 @@ function Restart-AdbServer {
             }
         }
     } catch { }
+    $sw.Stop()
+    Write-Host "adb start-server took $($sw.ElapsedMilliseconds) ms."
     Start-Sleep -Milliseconds 100
 }
 
@@ -162,12 +165,16 @@ function Find-DeviceEndpoint {
         for ($i = $mdns.Length - 1; $i -ge 0; $i--) {
             if ($mdns[$i] -match "$([regex]::Escape($deviceHost)):(\d+)") {
                 $found = "$deviceHost`:$($matches[1])"
+                $stopwatch.Stop()
                 Write-Host "Discovered device port via mDNS: $found" -ForegroundColor Green
+                Write-Host "mDNS search took $($stopwatch.ElapsedMilliseconds) ms."
                 return $found
             }
         }
         Start-Sleep -Milliseconds 250
     }
+    $stopwatch.Stop()
+    Write-Host "mDNS search took $($stopwatch.ElapsedMilliseconds) ms."
 
     # 3. Fallback to default port
     return "$deviceHost`:$defaultPort"
@@ -181,6 +188,7 @@ function Connect-AdbEndpoint {
     )
 
     Write-Host "Connecting to $Endpoint via adb..."
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = "adb"
     $psi.UseShellExecute = $false
@@ -192,7 +200,11 @@ function Connect-AdbEndpoint {
 
     try {
         $proc = [System.Diagnostics.Process]::Start($psi)
-        if (-not $proc) { return $false }
+        if (-not $proc) {
+            $sw.Stop()
+            Write-Host "adb connect took $($sw.ElapsedMilliseconds) ms."
+            return $false
+        }
 
         $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
         $stderrTask = $proc.StandardError.ReadToEndAsync()
@@ -200,13 +212,16 @@ function Connect-AdbEndpoint {
         $hasExited = $proc.WaitForExit([int]($TimeoutSeconds * 1000))
         if (-not $hasExited) {
             try { $proc.Kill() } catch { }
+            $sw.Stop()
             Write-Host "adb connect timed out after $TimeoutSeconds seconds." -ForegroundColor Yellow
+            Write-Host "adb connect took $($sw.ElapsedMilliseconds) ms."
             return $false
         }
 
         if (-not $stdoutTask.IsCompleted -or -not $stderrTask.IsCompleted) {
             [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
         }
+        $sw.Stop()
         $stdout = $stdoutTask.Result
         $stderr = $stderrTask.Result
 
@@ -216,10 +231,13 @@ function Connect-AdbEndpoint {
         if (-not [string]::IsNullOrWhiteSpace($stderr)) {
             Write-Host $stderr.Trim() -ForegroundColor Yellow
         }
+        Write-Host "adb connect took $($sw.ElapsedMilliseconds) ms."
 
         return ($stdout -match "connected to")
     } catch {
+        $sw.Stop()
         Write-Host "Connection error: $_" -ForegroundColor Yellow
+        Write-Host "adb connect took $($sw.ElapsedMilliseconds) ms."
         return $false
     }
 }
@@ -245,10 +263,13 @@ function Start-ScrcpyProcess {
         $psi.ArgumentList.Add($arg)
     }
 
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $proc = [System.Diagnostics.Process]::Start($psi)
 
     # Wait for exit or timeout (milliseconds)
     $hasExited = $proc.WaitForExit($timeoutSeconds * 1000)
+    $sw.Stop()
+    Write-Host "scrcpy took $($sw.ElapsedMilliseconds) ms."
 
     if (-not $hasExited) {
         if (-not $proc.HasExited) {
