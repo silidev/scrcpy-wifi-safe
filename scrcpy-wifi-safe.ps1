@@ -27,7 +27,7 @@ $adbConnectTimeoutMs = if ($env:SCRCPY_ADB_CONNECT_TIMEOUT_MS) { [double]$env:SC
 $durationRedThresholdMs = if ($env:SCRCPY_DURATION_RED_MS) { [int]$env:SCRCPY_DURATION_RED_MS } else { 200 }
 
 # Ping pre-check: verify network quality before proceeding
-Write-Host "Prüfe Verbindung zu $deviceHost (Ping -l $pingBufferSize)..."
+Write-Host "Checking connection to $deviceHost (Ping -l $pingBufferSize)..."
 $pingSuccess = $false
 $pingLatency = $null
 $pingError = $null
@@ -45,11 +45,11 @@ try {
 } catch {
     try {
         $pingOut = ping.exe $deviceHost -l $pingBufferSize -n 1
-        if ($LASTEXITCODE -eq 0 -and ($pingOut -join "`n") -match '(?:time|Zeit)[<=](?<ms>\d+)\s*ms') {
+        if ($LASTEXITCODE -eq 0 -and ($pingOut -join "`n") -match '(?:time)[<=](?<ms>\d+)\s*ms') {
             $pingSuccess = $true
             $pingLatency = [int]$Matches['ms']
         } else {
-            $pingError = "ping.exe fehlgeschlagen (Exit-Code: $LASTEXITCODE)"
+            $pingError = "ping.exe failed (exit code: $LASTEXITCODE)"
         }
     } catch {
         $pingError = $_.Exception.Message
@@ -57,12 +57,12 @@ try {
 }
 
 if (-not $pingSuccess) {
-    Write-Host "ABBRUCH: Ping zu $deviceHost (-l $pingBufferSize) ist fehlgeschlagen ($pingError)." -ForegroundColor Red
+    Write-Host "ABORT: Ping to $deviceHost (-l $pingBufferSize) failed ($pingError)." -ForegroundColor Red
     exit 1
 }
 
 if ($pingLatency -gt $maxPingLatencyMs) {
-    Write-Host "ABBRUCH: Ping-Latenz zu $deviceHost ist zu hoch: $pingLatency ms (maximal erlaubt: $maxPingLatencyMs ms bei -l $pingBufferSize)." -ForegroundColor Red
+    Write-Host "ABORT: Ping latency to $deviceHost is too high: $pingLatency ms (max allowed: $maxPingLatencyMs ms at -l $pingBufferSize)." -ForegroundColor Red
     exit 1
 }
 
