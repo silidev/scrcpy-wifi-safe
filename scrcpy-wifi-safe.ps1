@@ -12,11 +12,19 @@ $deviceHost = if ($env:SCRCPY_DEVICE_IP) { $env:SCRCPY_DEVICE_IP } else { "192.1
 $defaultPort = "5555"
 $scrcpyPath = if ($env:SCRCPY_PATH) { $env:SCRCPY_PATH } elseif (Test-Path "C:\progs\scrcpy\scrcpy.exe") { "C:\progs\scrcpy\scrcpy.exe" } else { "scrcpy" }
 
-# Timeout in seconds to consider scrcpy successfully running in background
-$timeoutSeconds = 2
+# Timeouts & limits
+$timeoutSeconds = if ($env:SCRCPY_TIMEOUT_SECONDS) { [int]$env:SCRCPY_TIMEOUT_SECONDS } else { 2 }
 $maxAttempts = 3
 $maxPingLatencyMs = if ($env:SCRCPY_MAX_PING_MS) { [int]$env:SCRCPY_MAX_PING_MS } else { 200 }
 $pingBufferSize = 1400
+$pingTimeoutMs = if ($env:SCRCPY_PING_TIMEOUT_MS) { [int]$env:SCRCPY_PING_TIMEOUT_MS } else { 2000 }
+
+# Timeouts for measured commands
+$adbStartServerTimeoutMs = if ($env:SCRCPY_ADB_START_TIMEOUT_MS) { [int]$env:SCRCPY_ADB_START_TIMEOUT_MS } else { 5000 }
+$mdnsTimeoutFirstAttemptSeconds = if ($env:SCRCPY_MDNS_TIMEOUT_FIRST_S) { [double]$env:SCRCPY_MDNS_TIMEOUT_FIRST_S } else { 1.5 }
+$mdnsTimeoutRetrySeconds = if ($env:SCRCPY_MDNS_TIMEOUT_RETRY_S) { [double]$env:SCRCPY_MDNS_TIMEOUT_RETRY_S } else { 3.5 }
+$adbConnectTimeoutSeconds = if ($env:SCRCPY_ADB_CONNECT_TIMEOUT_S) { [double]$env:SCRCPY_ADB_CONNECT_TIMEOUT_S } else { 1 }
+$durationRedThresholdMs = if ($env:SCRCPY_DURATION_RED_MS) { [int]$env:SCRCPY_DURATION_RED_MS } else { 200 }
 
 # Ping pre-check: verify network quality before proceeding
 Write-Host "Prüfe Verbindung zu $deviceHost (Ping -l $pingBufferSize)..."
@@ -27,7 +35,7 @@ $pingError = $null
 try {
     $pingSender = [System.Net.NetworkInformation.Ping]::new()
     $pingBuffer = [byte[]]::new($pingBufferSize)
-    $pingReply = $pingSender.Send($deviceHost, 2000, $pingBuffer)
+    $pingReply = $pingSender.Send($deviceHost, $pingTimeoutMs, $pingBuffer)
     if ($pingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
         $pingSuccess = $true
         $pingLatency = $pingReply.RoundtripTime
@@ -67,6 +75,20 @@ function Show-WirelessDebuggingHelp {
     Write-Host "2. Ensure it is toggled 'On' and connected to the same Wi-Fi network." -ForegroundColor Yellow
     Write-Host "3. If the IP address changed from $deviceHost, set `$env:SCRCPY_DEVICE_IP=<new_ip>`." -ForegroundColor Yellow
     Write-Host ""
+}
+
+function Write-CommandDuration {
+    param(
+        [string]$CommandName,
+        [long]$DurationMs
+    )
+    Write-Host "$CommandName took " -NoNewline
+    if ($DurationMs -gt $durationRedThresholdMs) {
+        Write-Host "$DurationMs ms" -ForegroundColor Red -NoNewline
+    } else {
+        Write-Host "$DurationMs ms" -NoNewline
+    }
+    Write-Host "."
 }
 
 # Safely invoke an ADB command with a tight timeout so it never hangs indefinitely
@@ -120,18 +142,18 @@ function Restart-AdbServer {
     Stop-Process -Name "adb" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 100
 
-    # Start adb server cleanly (5s timeout protects cold starts under load without adding delay)
+    # Start adb server cleanly (protected by timeout against cold starts under load without adding delay)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $p = Start-Process -FilePath "adb" -ArgumentList "start-server" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
         if ($p) {
-            if (-not $p.WaitForExit(5000)) {
+            if (-not $p.WaitForExit($adbStartServerTimeoutMs)) {
                 try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
             }
         }
     } catch { }
     $sw.Stop()
-    Write-Host "adb start-server took $($sw.ElapsedMilliseconds) ms."
+    Write-CommandDuration -CommandName "adb start-server" -DurationMs $sw.ElapsedMilliseconds
     Start-Sleep -Milliseconds 100
 }
 
@@ -146,7 +168,7 @@ function Test-DeviceConnection {
 
 # Discover the endpoint (IP:Port) for $deviceHost
 function Find-DeviceEndpoint {
-    param([double]$MdnsTimeoutSeconds = 2)
+    param([double]$MdnsTimeoutSeconds = $mdnsTimeoutFirstAttemptSeconds)
 
     # 1. Check if already connected on any port for $deviceHost
     $devicesOut = Invoke-Adb -Arguments @("devices") -TimeoutSeconds 1
@@ -167,14 +189,14 @@ function Find-DeviceEndpoint {
                 $found = "$deviceHost`:$($matches[1])"
                 $stopwatch.Stop()
                 Write-Host "Discovered device port via mDNS: $found" -ForegroundColor Green
-                Write-Host "mDNS search took $($stopwatch.ElapsedMilliseconds) ms."
+                Write-CommandDuration -CommandName "mDNS search" -DurationMs $stopwatch.ElapsedMilliseconds
                 return $found
             }
         }
         Start-Sleep -Milliseconds 250
     }
     $stopwatch.Stop()
-    Write-Host "mDNS search took $($stopwatch.ElapsedMilliseconds) ms."
+    Write-CommandDuration -CommandName "mDNS search" -DurationMs $stopwatch.ElapsedMilliseconds
 
     # 3. Fallback to default port
     return "$deviceHost`:$defaultPort"
@@ -184,7 +206,7 @@ function Find-DeviceEndpoint {
 function Connect-AdbEndpoint {
     param(
         [string]$Endpoint,
-        [double]$TimeoutSeconds = 3
+        [double]$TimeoutSeconds = $adbConnectTimeoutSeconds
     )
 
     Write-Host "Connecting to $Endpoint via adb..."
@@ -202,7 +224,7 @@ function Connect-AdbEndpoint {
         $proc = [System.Diagnostics.Process]::Start($psi)
         if (-not $proc) {
             $sw.Stop()
-            Write-Host "adb connect took $($sw.ElapsedMilliseconds) ms."
+            Write-CommandDuration -CommandName "adb connect" -DurationMs $sw.ElapsedMilliseconds
             return $false
         }
 
@@ -214,7 +236,7 @@ function Connect-AdbEndpoint {
             try { $proc.Kill() } catch { }
             $sw.Stop()
             Write-Host "adb connect timed out after $TimeoutSeconds seconds." -ForegroundColor Yellow
-            Write-Host "adb connect took $($sw.ElapsedMilliseconds) ms."
+            Write-CommandDuration -CommandName "adb connect" -DurationMs $sw.ElapsedMilliseconds
             return $false
         }
 
@@ -231,13 +253,13 @@ function Connect-AdbEndpoint {
         if (-not [string]::IsNullOrWhiteSpace($stderr)) {
             Write-Host $stderr.Trim() -ForegroundColor Yellow
         }
-        Write-Host "adb connect took $($sw.ElapsedMilliseconds) ms."
+        Write-CommandDuration -CommandName "adb connect" -DurationMs $sw.ElapsedMilliseconds
 
         return ($stdout -match "connected to")
     } catch {
         $sw.Stop()
         Write-Host "Connection error: $_" -ForegroundColor Yellow
-        Write-Host "adb connect took $($sw.ElapsedMilliseconds) ms."
+        Write-CommandDuration -CommandName "adb connect" -DurationMs $sw.ElapsedMilliseconds
         return $false
     }
 }
@@ -269,7 +291,7 @@ function Start-ScrcpyProcess {
     # Wait for exit or timeout (milliseconds)
     $hasExited = $proc.WaitForExit($timeoutSeconds * 1000)
     $sw.Stop()
-    Write-Host "scrcpy took $($sw.ElapsedMilliseconds) ms."
+    Write-CommandDuration -CommandName "scrcpy" -DurationMs $sw.ElapsedMilliseconds
 
     if (-not $hasExited) {
         if (-not $proc.HasExited) {
@@ -291,14 +313,14 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         Write-Host "`n--- Retry attempt $attempt of $maxAttempts ---" -ForegroundColor Cyan
     }
 
-    # Find endpoint (give mDNS 1.5s on first try, 3.5s on retries after server restart)
-    $mdnsWait = if ($attempt -eq 1) { 1.5 } else { 3.5 }
+    # Find endpoint (give mDNS first attempt timeout on first try, retry timeout after server restart)
+    $mdnsWait = if ($attempt -eq 1) { $mdnsTimeoutFirstAttemptSeconds } else { $mdnsTimeoutRetrySeconds }
     $deviceIp = Find-DeviceEndpoint -MdnsTimeoutSeconds $mdnsWait
 
     # Verify connection status
     $isConnected = Test-DeviceConnection -Endpoint $deviceIp
     if (-not $isConnected) {
-        $connectOk = Connect-AdbEndpoint -Endpoint $deviceIp -TimeoutSeconds 3
+        $connectOk = Connect-AdbEndpoint -Endpoint $deviceIp -TimeoutSeconds $adbConnectTimeoutSeconds
         $isConnected = $connectOk -or (Test-DeviceConnection -Endpoint $deviceIp)
     } else {
         Write-Host "Device $deviceIp already connected." -ForegroundColor Green

@@ -65,22 +65,30 @@ Measured on the local Windows machine with active Samsung device:
 
 ## 5. Derived Timeouts & Rationale
 
-All timeouts in `scrcpy-wifi-safe.ps1` are calibrated directly against the measurements above:
+All timeouts in `scrcpy-wifi-safe.ps1` are calibrated directly against the measurements above.
+They are defined as **top-level variables** at the start of the script and can be overridden via environment variables without touching source code:
+
+| Variable | Env-var override | Default | Rationale |
+| :--- | :--- | :--- | :--- |
+| `$timeoutSeconds` | `SCRCPY_TIMEOUT_SECONDS` | **2 s** | Failed launches exit in < 400 ms. If running past 2 s, scrcpy is stable in background. |
+| `$pingTimeoutMs` | `SCRCPY_PING_TIMEOUT_MS` | **2000 ms** | Generous ceiling for the .NET Ping API call. |
+| `$adbStartServerTimeoutMs` | `SCRCPY_ADB_START_TIMEOUT_MS` | **5000 ms** | Safety margin for cold daemon startup under CPU load (returns immediately when started). |
+| `$mdnsTimeoutFirstAttemptSeconds` | `SCRCPY_MDNS_TIMEOUT_FIRST_S` | **1.5 s** | If daemon is already running, match is instant (< 200 ms). |
+| `$mdnsTimeoutRetrySeconds` | `SCRCPY_MDNS_TIMEOUT_RETRY_S` | **3.5 s** | Allows cold-started daemon to receive the multicast packet after server restart. |
+| `$adbConnectTimeoutSeconds` | `SCRCPY_ADB_CONNECT_TIMEOUT_S` | **3.0 s** | TCP RST takes 2.58 s to return error 10061. 3.0 s lets it report naturally, but cuts off silent packet drops before the 20+ s OS timeout. |
+| `$durationRedThresholdMs` | `SCRCPY_DURATION_RED_MS` | **200 ms** | Duration display threshold: values above this are printed in red. |
+
+Additional fixed timings (not configurable via env — they are low-level OS/socket constants):
 
 | Setting / Location | Value | Rationale |
 | :--- | :--- | :--- |
-| `TIMEOUT_SECONDS` (scrcpy launch) | **2 s** | Failed launches exit in < 400 ms. If running past 2 s, scrcpy is stable in background. |
 | `Invoke-Adb` default timeout | **2.0 s** | Local queries complete in < 150 ms; 2 s provides safety margin without blocking. |
-| `Test-DeviceConnection` | **1.0 s** | `get-state` takes ~130 ms; 1 s is plenty. |
-| `Connect-AdbEndpoint` timeout | **3.0 s** | TCP RST takes 2.58 s to return error 10061. 3.0 s lets it report naturally, but cuts off silent packet drops before the 20+ s OS timeout. |
+| `Test-DeviceConnection` timeout | **1.0 s** | `get-state` takes ~130 ms; 1 s is plenty. |
 | `Restart-AdbServer` kill method | `Stop-Process -Force` | Skips `kill-server`; instant force-kill guarantees no hang and frees port 5037 immediately. |
 | `Restart-AdbServer` post-kill sleep | **100 ms** | Sufficient for Windows kernel socket cleanup. |
-| `Restart-AdbServer` start wait | **5000 ms** | Safety margin for cold daemon startup under CPU load (returns immediately when started). |
-| `Restart-AdbServer` post-start sleep| **100 ms** | Buffer before issuing subsequent socket commands. |
+| `Restart-AdbServer` post-start sleep | **100 ms** | Buffer before issuing subsequent socket commands. |
 | mDNS poll interval | **250 ms** | Captures the broadcast (~210 ms) on the 1st or 2nd cycle without CPU spin. |
 | mDNS reverse scan | Reverse `-match` | Scans array backwards; captures newest port on 1st match with zero pipeline overhead. |
-| mDNS timeout (Attempt 1) | **1.5 s** | If daemon is already running, match is instant (< 200 ms). |
-| mDNS timeout (Attempts 2–3) | **3.5 s** | Allows cold-started daemon to receive the multicast packet. |
 | Stale endpoint cleanup | Implicit via server restart | Killing the daemon clears all device sockets; explicit `adb disconnect` is redundant. |
 | Delay between retries | **150 ms** | Eliminates dead waiting time before next attempt. |
 
