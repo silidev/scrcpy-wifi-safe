@@ -7,9 +7,33 @@ param(
 # discovers updated dynamic ports via mDNS, restarts ADB if needed, and retries.
 # Exclusively designed for PowerShell 7 (pwsh) with minimal latency timeouts.
 
+# Extract target device IP or endpoint (e.g. 192.168.1.100 or 192.168.1.100:5555) from CLI arguments if supplied
+$cliTargetIp = $null
+$cliDefaultPort = $null
+$remainingScrcpyArgs = [System.Collections.Generic.List[string]]::new()
+
+if ($ScrcpyArgs) {
+    for ($i = 0; $i -lt $ScrcpyArgs.Length; $i++) {
+        $arg = $ScrcpyArgs[$i]
+        $prevArg = if ($i -gt 0) { $ScrcpyArgs[$i - 1] } else { $null }
+        $parsedIp = [ref]$null
+        if (-not $cliTargetIp -and $prevArg -ne "-s" -and $prevArg -ne "--serial" -and $arg -match '^((?:\d{1,3}\.){3}\d{1,3})(?::(\d+))?$') {
+            if ([System.Net.IPAddress]::TryParse($Matches[1], $parsedIp)) {
+                $cliTargetIp = $parsedIp.Value.ToString()
+                if ($Matches[2]) {
+                    $cliDefaultPort = $Matches[2]
+                }
+                continue
+            }
+        }
+        $remainingScrcpyArgs.Add($arg)
+    }
+}
+$ScrcpyArgs = $remainingScrcpyArgs.ToArray()
+
 # Configuration
-$deviceHost = if ($env:SCRCPY_DEVICE_IP) { $env:SCRCPY_DEVICE_IP } else { "192.168.178.200" }
-$defaultPort = "5555"
+$deviceHost = if ($cliTargetIp) { $cliTargetIp } elseif ($env:SCRCPY_DEVICE_IP) { $env:SCRCPY_DEVICE_IP } else { "192.168.178.200" }
+$defaultPort = if ($cliDefaultPort) { $cliDefaultPort } else { "5555" }
 $scrcpyPath = if ($env:SCRCPY_PATH) { $env:SCRCPY_PATH } elseif (Test-Path "C:\progs\scrcpy\scrcpy.exe") { "C:\progs\scrcpy\scrcpy.exe" } else { "scrcpy" }
 
 # Timeouts & limits
@@ -73,7 +97,7 @@ function Show-WirelessDebuggingHelp {
     Write-Host "Android 11+ Wireless Debugging Help:" -ForegroundColor Yellow
     Write-Host "1. On your phone, go to Settings > Developer Options > Wireless Debugging." -ForegroundColor Yellow
     Write-Host "2. Ensure it is toggled 'On' and connected to the same Wi-Fi network." -ForegroundColor Yellow
-    Write-Host "3. If the IP address changed from $deviceHost, set `$env:SCRCPY_DEVICE_IP=<new_ip>`." -ForegroundColor Yellow
+    Write-Host "3. If the IP address changed from $deviceHost, pass the new IP (e.g. 's <ip>') or set `$env:SCRCPY_DEVICE_IP=<new_ip>`." -ForegroundColor Yellow
     Write-Host ""
 }
 

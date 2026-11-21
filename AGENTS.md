@@ -27,7 +27,7 @@ In AGENTS.md capture non-obvious knowledge that an AI agent cannot deduce on its
   `s.cmd` (`L:\Dropbox\shimsDbx\s.cmd`)  
   └─> `scrcpy-koh.cmd` (`L:\Dropbox\MyScripts\scrcpy-wifi-safe\scrcpy-koh.cmd`)  
   └─> `scrcpy-wifi-safe.ps1` (`pwsh -ExecutionPolicy Bypass -File ...`)
-- **Target Device**: IP configurable via `$env:SCRCPY_DEVICE_IP`
+- **Target Device**: IP configurable via CLI argument (e.g. `s 192.168.178.134`), `$env:SCRCPY_DEVICE_IP`, or script default ("192.168.178.200").
 - **Connection Type**: Android 11+ Wireless Debugging (`_adb-tls-connect._tcp.`). The phone assigns **random dynamic ports** (e.g. `35223`, `38177`, `40261`) on each reconnect / toggle. Port 5555 is only a legacy fallback.
 
 ---

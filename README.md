@@ -12,16 +12,24 @@ A PowerShell wrapper script that manages connections for scrcpy over Wi-Fi.
 
 ## Setup & Configuration
 
-Configure the device IP in `scrcpy-wifi-safe.ps1` or set the environment variable:
+Configure the device IP by passing it as a CLI argument, setting the environment variable, or modifying the default in `scrcpy-wifi-safe.ps1`:
 
 ```powershell
+# Direct CLI argument (supported by s.cmd, scrcpy-koh.cmd, and scrcpy-wifi-safe.ps1):
+s 192.168.178.134
+
+# Environment variable override:
 $env:SCRCPY_DEVICE_IP = "192.168.178.39"
 ```
 
 ## Running
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File .\scrcpy-wifi-safe.ps1
+# Via shim shortcut:
+s 192.168.178.134
+
+# Directly via PowerShell:
+pwsh -ExecutionPolicy Bypass -File .\scrcpy-wifi-safe.ps1 192.168.178.134
 ```
 
-Example in scrcpy-koh.cmd
+Example in `scrcpy-koh.cmd`.
