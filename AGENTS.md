@@ -16,7 +16,8 @@ In AGENTS.md capture non-obvious knowledge that an AI agent cannot deduce on its
 - **Preserve CLI & Output Contract**: Do not alter CLI parameters (`$ScrcpyArgs`, `%*`), window flags, or console behavior unless explicitly ordered.
 - **Diagnostics First**: If an error cannot be resolved with certainty, improve logging/diagnostics to expose what failed rather than guessing changes.
 - **Missing References**: Never remove or rewrite code referencing missing external tools/entities; report them first.
-- **Commit Message**: If any file was changed, when reporting to the user, include a commit message for the user to use for committing the changes.
+- **Commit Message**: If any file was changed, when reporting to the user, include a commit message for the user to use for committing the changes. 
+- **Clean Code**: Heed the rules of clean code. E.g.: Encapsulate distinct logic and operational steps inside dedicated, well-named functions so top-level execution flows read cleanly as a sequence of single-line function calls.
 
 ---
 
@@ -43,6 +44,14 @@ In AGENTS.md capture non-obvious knowledge that an AI agent cannot deduce on its
 3. **PowerShell .NET threadpool crashes**:
    - Direct `.add_OutputDataReceived({ ... })` event handlers run on .NET threadpool threads. Any unhandled exception (or missing `$EventArgs`) instantly crashes the host process with exit code 1.
    - **Fix**: Use `[System.Diagnostics.Process]` with async tasks (`ReadToEndAsync()`) and `[System.Threading.Tasks.Task]::WaitAll(..., 300)`.
+4. **`.Result` deadlock on uncompleted `ReadToEndAsync()` tasks**:
+   - Accessing `.Result` on a .NET `Task` synchronously blocks the calling thread until the task completes.
+   - If an ADB command times out or is killed, or if a child process inherits pipe handles, `ReadToEndAsync()` never sees EOF and `WaitAll(..., 300)` times out. Accessing `.Result` on an uncompleted task blocks indefinitely.
+   - **Fix**: Never access `.Result` unconditionally. Always guard with `if ($stdoutTask.IsCompleted) { $stdoutTask.Result } else { "" }` and kill entire process trees via `$proc.Kill($true)`.
+5. **Daemon cold-start pipe inheritance**:
+   - If ADB server is not already running on TCP 5037, running `adb devices` (or any redirected query) spawns `adb fork-server server`, which inherits redirected stdout/stderr pipes and keeps them open forever.
+   - Furthermore, daemon cold-start takes ~2400 ms, causing tight 1000 ms queries to time out.
+   - **Fix**: Use `Ensure-AdbServer` with a quick TCP socket check on port 5037; if not running, start it cleanly via `Start-Process -NoNewWindow` before any redirected queries.
 
 ---
 

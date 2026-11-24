@@ -50,47 +50,56 @@ $mdnsTimeoutRetryMs = if ($env:SCRCPY_MDNS_TIMEOUT_RETRY_MS) { [double]$env:SCRC
 $adbConnectTimeoutMs = if ($env:SCRCPY_ADB_CONNECT_TIMEOUT_MS) { [double]$env:SCRCPY_ADB_CONNECT_TIMEOUT_MS } else { 1000 }
 $durationRedThresholdMs = if ($env:SCRCPY_DURATION_RED_MS) { [int]$env:SCRCPY_DURATION_RED_MS } else { 200 }
 
-# Ping pre-check: verify network quality before proceeding
-Write-Host "Checking connection to $deviceHost (Ping -l $pingBufferSize)..."
-$pingSuccess = $false
-$pingLatency = $null
-$pingError = $null
+# Verify network quality before proceeding
+function Test-DevicePing {
+    param(
+        [string]$TargetHost = $deviceHost,
+        [int]$BufferSize = $pingBufferSize,
+        [int]$TimeoutMs = $pingTimeoutMs,
+        [int]$MaxLatencyMs = $maxPingLatencyMs
+    )
 
-try {
-    $pingSender = [System.Net.NetworkInformation.Ping]::new()
-    $pingBuffer = [byte[]]::new($pingBufferSize)
-    $pingReply = $pingSender.Send($deviceHost, $pingTimeoutMs, $pingBuffer)
-    if ($pingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
-        $pingSuccess = $true
-        $pingLatency = $pingReply.RoundtripTime
-    } else {
-        $pingError = "Status: $($pingReply.Status)"
-    }
-} catch {
+    Write-Host "Checking connection to $TargetHost (Ping -l $BufferSize)..."
+    $pingSuccess = $false
+    $pingLatency = $null
+    $pingError = $null
+
     try {
-        $pingOut = ping.exe $deviceHost -l $pingBufferSize -n 1
-        if ($LASTEXITCODE -eq 0 -and ($pingOut -join "`n") -match '(?:time)[<=](?<ms>\d+)\s*ms') {
+        $pingSender = [System.Net.NetworkInformation.Ping]::new()
+        $pingBuffer = [byte[]]::new($BufferSize)
+        $pingReply = $pingSender.Send($TargetHost, $TimeoutMs, $pingBuffer)
+        if ($pingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
             $pingSuccess = $true
-            $pingLatency = [int]$Matches['ms']
+            $pingLatency = $pingReply.RoundtripTime
         } else {
-            $pingError = "ping.exe failed (exit code: $LASTEXITCODE)"
+            $pingError = "Status: $($pingReply.Status)"
         }
     } catch {
-        $pingError = $_.Exception.Message
+        try {
+            $pingOut = ping.exe $TargetHost -l $BufferSize -n 1
+            if ($LASTEXITCODE -eq 0 -and ($pingOut -join "`n") -match '(?:time)[<=](?<ms>\d+)\s*ms') {
+                $pingSuccess = $true
+                $pingLatency = [int]$Matches['ms']
+            } else {
+                $pingError = "ping.exe failed (exit code: $LASTEXITCODE)"
+            }
+        } catch {
+            $pingError = $_.Exception.Message
+        }
     }
-}
 
-if (-not $pingSuccess) {
-    Write-Host "ABORT: Ping to $deviceHost (-l $pingBufferSize) failed ($pingError)." -ForegroundColor Red
-    exit 1
-}
+    if (-not $pingSuccess) {
+        Write-Host "ABORT: Ping to $TargetHost (-l $BufferSize) failed ($pingError)." -ForegroundColor Red
+        exit 1
+    }
 
-if ($pingLatency -gt $maxPingLatencyMs) {
-    Write-Host "ABORT: Ping latency to $deviceHost is too high: $pingLatency ms (max allowed: $maxPingLatencyMs ms at -l $pingBufferSize)." -ForegroundColor Red
-    exit 1
-}
+    if ($pingLatency -gt $MaxLatencyMs) {
+        Write-Host "ABORT: Ping latency to $TargetHost is too high: $pingLatency ms (max allowed: $MaxLatencyMs ms at -l $BufferSize)." -ForegroundColor Red
+        exit 1
+    }
 
-Write-Host "Ping OK: $pingLatency ms (<= $maxPingLatencyMs ms)." -ForegroundColor Green
+    Write-Host "Ping OK: $pingLatency ms (<= $MaxLatencyMs ms)." -ForegroundColor Green
+}
 
 function Show-WirelessDebuggingHelp {
     Write-Host ""
@@ -141,14 +150,15 @@ function Invoke-Adb {
 
         $hasExited = $proc.WaitForExit([int]$TimeoutMs)
         if (-not $hasExited) {
-            try { $proc.Kill() } catch { }
+            try { $proc.Kill($true) } catch { }
+            Write-Host "adb $($Arguments -join ' ') timed out after $TimeoutMs ms." -ForegroundColor Yellow
         }
 
         if (-not $stdoutTask.IsCompleted -or -not $stderrTask.IsCompleted) {
             [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
         }
 
-        $out = $stdoutTask.Result
+        $out = if ($stdoutTask.IsCompleted) { $stdoutTask.Result } else { "" }
         if (-not [string]::IsNullOrWhiteSpace($out)) {
             return ($out -split "`r?`n")
         }
@@ -181,6 +191,23 @@ function Restart-AdbServer {
     Start-Sleep -Milliseconds 100
 }
 
+# Ensures ADB server is running before issuing redirected queries, preventing cold-start daemon pipe hangs
+function Ensure-AdbServer {
+    $isRunning = $false
+    try {
+        $tcp = [System.Net.Sockets.TcpClient]::new()
+        $task = $tcp.ConnectAsync("127.0.0.1", 5037)
+        if ($task.Wait(150)) {
+            $isRunning = $true
+        }
+        $tcp.Dispose()
+    } catch { }
+
+    if (-not $isRunning) {
+        Restart-AdbServer
+    }
+}
+
 # Check if a specific endpoint is reachable and authorized (1000 ms max)
 function Test-DeviceConnection {
     param([string]$Endpoint)
@@ -195,6 +222,7 @@ function Find-DeviceEndpoint {
     param([double]$MdnsTimeoutMs = $mdnsTimeoutFirstAttemptMs)
 
     # 1. Check if already connected on any port for $deviceHost
+    Write-Host "Checking connected ADB devices..."
     $devicesOut = Invoke-Adb -Arguments @("devices") -TimeoutMs 1000
     foreach ($line in $devicesOut) {
         if ($line -match "$([regex]::Escape($deviceHost)):(\d+)\s+device") {
@@ -257,7 +285,7 @@ function Connect-AdbEndpoint {
 
         $hasExited = $proc.WaitForExit([int]$TimeoutMs)
         if (-not $hasExited) {
-            try { $proc.Kill() } catch { }
+            try { $proc.Kill($true) } catch { }
             $sw.Stop()
             Write-Host "adb connect timed out after $TimeoutMs ms." -ForegroundColor Yellow
             Write-CommandDuration -CommandName "adb connect" -DurationMs $sw.ElapsedMilliseconds
@@ -268,8 +296,8 @@ function Connect-AdbEndpoint {
             [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 300) | Out-Null
         }
         $sw.Stop()
-        $stdout = $stdoutTask.Result
-        $stderr = $stderrTask.Result
+        $stdout = if ($stdoutTask.IsCompleted) { $stdoutTask.Result } else { "" }
+        $stderr = if ($stderrTask.IsCompleted) { $stderrTask.Result } else { "" }
 
         if (-not [string]::IsNullOrWhiteSpace($stdout)) {
             Write-Host $stdout.Trim()
@@ -331,40 +359,59 @@ function Start-ScrcpyProcess {
     return $code
 }
 
-# --- Main Retry Loop ---
-for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-    if ($attempt -gt 1) {
-        Write-Host "`n--- Retry attempt $attempt of $maxAttempts ---" -ForegroundColor Cyan
-    }
+# Connects to the device, handles mDNS discovery, and launches scrcpy with automatic retries
+function Start-ScrcpySession {
+    param(
+        [string]$TargetHost = $deviceHost,
+        [int]$MaxAttemptsCount = $maxAttempts
+    )
 
-    # Find endpoint (give mDNS first attempt timeout on first try, retry timeout after server restart)
-    $mdnsWait = if ($attempt -eq 1) { $mdnsTimeoutFirstAttemptMs } else { $mdnsTimeoutRetryMs }
-    $deviceIp = Find-DeviceEndpoint -MdnsTimeoutMs $mdnsWait
+    Ensure-AdbServer
 
-    # Verify connection status
-    $isConnected = Test-DeviceConnection -Endpoint $deviceIp
-    if (-not $isConnected) {
-        $connectOk = Connect-AdbEndpoint -Endpoint $deviceIp -TimeoutMs $adbConnectTimeoutMs
-        $isConnected = $connectOk -or (Test-DeviceConnection -Endpoint $deviceIp)
-    } else {
-        Write-Host "Device $deviceIp already connected." -ForegroundColor Green
-    }
+    for ($attempt = 1; $attempt -le $MaxAttemptsCount; $attempt++) {
+        if ($attempt -gt 1) {
+            Write-Host "`n--- Retry attempt $attempt of $MaxAttemptsCount ---" -ForegroundColor Cyan
+        }
 
-    if ($isConnected) {
-        $exitCode = Start-ScrcpyProcess -TargetEndpoint $deviceIp
-        if ($exitCode -eq 0) {
-            exit 0
+        # Find endpoint (give mDNS first attempt timeout on first try, retry timeout after server restart)
+        $mdnsWait = if ($attempt -eq 1) { $mdnsTimeoutFirstAttemptMs } else { $mdnsTimeoutRetryMs }
+        $deviceIp = Find-DeviceEndpoint -MdnsTimeoutMs $mdnsWait
+
+        # Verify connection status
+        $isConnected = Test-DeviceConnection -Endpoint $deviceIp
+        if (-not $isConnected) {
+            $connectOk = Connect-AdbEndpoint -Endpoint $deviceIp -TimeoutMs $adbConnectTimeoutMs
+            $isConnected = $connectOk -or (Test-DeviceConnection -Endpoint $deviceIp)
+        } else {
+            Write-Host "Device $deviceIp already connected." -ForegroundColor Green
+        }
+
+        if ($isConnected) {
+            $exitCode = Start-ScrcpyProcess -TargetEndpoint $deviceIp
+            if ($exitCode -eq 0) {
+                exit 0
+            }
+        }
+
+        # If connection or scrcpy failed, clean up and restart ADB server before retrying
+        if ($attempt -lt $MaxAttemptsCount) {
+            Write-Host "Connection attempt $attempt failed. Retrying..." -ForegroundColor Yellow
+            Restart-AdbServer
+            Start-Sleep -Milliseconds 150
         }
     }
 
-    # If connection or scrcpy failed, clean up and restart ADB server before retrying
-    if ($attempt -lt $maxAttempts) {
-        Write-Host "Connection attempt $attempt failed. Retrying..." -ForegroundColor Yellow
-        Restart-AdbServer
-        Start-Sleep -Milliseconds 150
-    }
+    Write-Host "`nERROR: Could not establish a connection to $TargetHost after $MaxAttemptsCount attempts." -ForegroundColor Red
+    Show-WirelessDebuggingHelp
+    exit 1
 }
 
-Write-Host "`nERROR: Could not establish a connection to $deviceHost after $maxAttempts attempts." -ForegroundColor Red
-Show-WirelessDebuggingHelp
-exit 1
+# ==============================================================================
+# Main Execution Flow
+# ==============================================================================
+
+# Verify network quality before proceeding (comment out this line to bypass ping test)
+Test-DevicePing
+
+# Connect, handle dynamic mDNS port discovery, and launch scrcpy with automatic retries
+Start-ScrcpySession
