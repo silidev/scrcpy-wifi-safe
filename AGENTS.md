@@ -80,7 +80,7 @@ They are defined as **top-level variables** at the start of the script and can b
 | Variable | Env-var override | Default | Rationale |
 | :--- | :--- | :--- | :--- |
 | `$timeoutMs` | `SCRCPY_TIMEOUT_MS` | **2000 ms** | Failed launches exit in < 400 ms. If running past 2000 ms, scrcpy is stable in background. |
-| `$pingTimeoutMs` | `SCRCPY_PING_TIMEOUT_MS` | **2000 ms** | Generous ceiling for the .NET Ping API call. |
+| `$pingTimeoutMs` | `SCRCPY_PING_TIMEOUT_MS` | **1000 ms** | Timeout for the .NET Ping API call and max allowed ping latency threshold. |
 | `$adbStartServerTimeoutMs` | `SCRCPY_ADB_START_TIMEOUT_MS` | **5000 ms** | Safety margin for cold daemon startup under CPU load (returns immediately when started). |
 | `$mdnsTimeoutFirstAttemptMs` | `SCRCPY_MDNS_TIMEOUT_FIRST_MS` | **1500 ms** | If daemon is already running, match is instant (< 200 ms). |
 | `$mdnsTimeoutRetryMs` | `SCRCPY_MDNS_TIMEOUT_RETRY_MS` | **3500 ms** | Allows cold-started daemon to receive the multicast packet after server restart. |

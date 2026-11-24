@@ -39,9 +39,8 @@ $scrcpyPath = if ($env:SCRCPY_PATH) { $env:SCRCPY_PATH } elseif (Test-Path "C:\p
 # Timeouts & limits
 $timeoutMs = if ($env:SCRCPY_TIMEOUT_MS) { [int]$env:SCRCPY_TIMEOUT_MS } else { 2000 }
 $maxAttempts = 3
-$maxPingLatencyMs = if ($env:SCRCPY_MAX_PING_MS) { [int]$env:SCRCPY_MAX_PING_MS } else { 200 }
 $pingBufferSize = 1400
-$pingTimeoutMs = if ($env:SCRCPY_PING_TIMEOUT_MS) { [int]$env:SCRCPY_PING_TIMEOUT_MS } else { 2000 }
+$pingTimeoutMs = if ($env:SCRCPY_PING_TIMEOUT_MS) { [int]$env:SCRCPY_PING_TIMEOUT_MS } else { 1000 }
 
 # Timeouts for measured commands
 $adbStartServerTimeoutMs = if ($env:SCRCPY_ADB_START_TIMEOUT_MS) { [int]$env:SCRCPY_ADB_START_TIMEOUT_MS } else { 5000 }
@@ -55,8 +54,7 @@ function Test-DevicePing {
     param(
         [string]$TargetHost = $deviceHost,
         [int]$BufferSize = $pingBufferSize,
-        [int]$TimeoutMs = $pingTimeoutMs,
-        [int]$MaxLatencyMs = $maxPingLatencyMs
+        [int]$TimeoutMs = $pingTimeoutMs
     )
 
     Write-Host "Checking connection to $TargetHost (Ping -l $BufferSize)..."
@@ -93,12 +91,12 @@ function Test-DevicePing {
         exit 1
     }
 
-    if ($pingLatency -gt $MaxLatencyMs) {
-        Write-Host "ABORT: Ping latency to $TargetHost is too high: $pingLatency ms (max allowed: $MaxLatencyMs ms at -l $BufferSize)." -ForegroundColor Red
+    if ($pingLatency -gt $TimeoutMs) {
+        Write-Host "ABORT: Ping latency to $TargetHost is too high: $pingLatency ms (max allowed: $TimeoutMs ms at -l $BufferSize)." -ForegroundColor Red
         exit 1
     }
 
-    Write-Host "Ping OK: $pingLatency ms (<= $MaxLatencyMs ms)." -ForegroundColor Green
+    Write-Host "Ping OK: $pingLatency ms (<= $TimeoutMs ms)." -ForegroundColor Green
 }
 
 function Show-WirelessDebuggingHelp {
