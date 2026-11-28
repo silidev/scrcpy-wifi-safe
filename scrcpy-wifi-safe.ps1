@@ -31,6 +31,9 @@ if ($ScrcpyArgs) {
 }
 $ScrcpyArgs = $remainingScrcpyArgs.ToArray()
 
+# Enable ADB's built-in Openscreen mDNS daemon on Windows (avoids "ERROR: mdns daemon unavailable" when Bonjour is not installed)
+$env:ADB_MDNS_OPENSCREEN = "1"
+
 # Configuration
 $deviceHost = if ($cliTargetIp) { $cliTargetIp } elseif ($env:SCRCPY_DEVICE_IP) { $env:SCRCPY_DEVICE_IP } else { "192.168.178.200" }
 $defaultPort = if ($cliDefaultPort) { $cliDefaultPort } else { "5555" }
