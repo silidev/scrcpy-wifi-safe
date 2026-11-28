@@ -248,7 +248,21 @@ function Find-DeviceEndpoint {
     $stopwatch.Stop()
     Write-CommandDuration -CommandName "mDNS search" -DurationMs $stopwatch.ElapsedMilliseconds
 
-    # 3. Fallback to default port
+    # 3. If a USB-connected device matches $deviceHost, enable tcpip on $defaultPort
+    foreach ($line in $devicesOut) {
+        if ($line -match '^([^\s:]+)\s+device\b') {
+            $usbSerial = $matches[1]
+            $ipLines = Invoke-Adb -Arguments @("-s", $usbSerial, "shell", "ip", "-4", "addr", "show", "wlan0") -TimeoutMs 1500
+            if (($ipLines -join "`n") -match [regex]::Escape($deviceHost)) {
+                Write-Host "Found USB device $usbSerial with IP $deviceHost. Enabling adb tcpip $defaultPort..." -ForegroundColor Cyan
+                Invoke-Adb -Arguments @("-s", $usbSerial, "tcpip", $defaultPort) -TimeoutMs 3000 | Out-Null
+                Start-Sleep -Milliseconds 500
+                return "$deviceHost`:$defaultPort"
+            }
+        }
+    }
+
+    # 4. Fallback to default port
     return "$deviceHost`:$defaultPort"
 }
 
